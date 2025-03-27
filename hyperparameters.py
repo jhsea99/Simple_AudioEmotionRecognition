@@ -6,7 +6,7 @@ VIDEO_PATH = 'path/to/your/video/data'
 ANNOTATION_PATH = 'path/to/your/annotation/file'
 
 # Face preprocessing parameters (assuming OpenFace is used externally)
-ALIGNED_FACE_SIZE = (112, 112)  # Example size
+ALIGNED_FACE_SIZE = (224, 224)  # Example size
 
 # ResNet parameters
 RESNET_DEPTH = 50  # You can choose between 18, 34, 50, 101, 152

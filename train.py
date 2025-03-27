@@ -4,13 +4,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
-from dataset import FaceAudioEmotionDataset
-from face_feature_extractor import FaceFeatureExtractor
-from audio_feature_extractor import AudioFeatureExtractor
-from emotion_predictor import EmotionPredictor # Or EmotionPredictorWithTransformer
+from data.dataset import FaceAudioEmotionDataset
+from model.face_feature_extractor import FaceFeatureExtractor
+from model.audio_feature_extractor import AudioFeatureExtractor
+from model.emotion_predictor import EmotionPredictor # Or EmotionPredictorWithTransformer
 from hyperparameters import (
     AUDIO_PATH,
-    FACE_IMAGE_DIR,
+    VIDEO_PATH,
     ANNOTATION_PATH,
     BATCH_SIZE,
     LEARNING_RATE,
@@ -37,7 +37,7 @@ SAVE_DIR = 'saved_models'
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 # Instantiate the full dataset
-full_dataset = FaceAudioEmotionDataset(AUDIO_PATH, FACE_IMAGE_DIR, ANNOTATION_PATH)
+full_dataset = FaceAudioEmotionDataset(AUDIO_PATH, VIDEO_PATH, ANNOTATION_PATH)
 
 # Split the dataset into training and validation sets
 train_size = int(0.8 * len(full_dataset)) # Example: 80% for training
