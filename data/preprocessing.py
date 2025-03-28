@@ -15,7 +15,22 @@ def crop_align_face_and_extract_audio(video_path, output_dir, desired_size=(224,
         padding (float): Padding around the cropped face (as a fraction of the face size).
     """
     os.makedirs(output_dir, exist_ok=True)
+    converted_video_path = "../dataset/example_output/1-30-1280x720" # To store the path of the converted video if needed
 
+    # Check and convert video FPS if necessary
+    video_capture_check = cv2.VideoCapture(video_path)
+    original_fps = video_capture_check.get(cv2.CAP_PROP_FPS)
+    video_capture_check.release()
+
+    if original_fps != 25.0 and original_fps > 0:  # Check if FPS is valid and not already 25
+        try:
+            base_name = os.path.splitext(os.path.basename(video_path))[0]
+            converted_video_path = os.path.join(output_dir, f"{base_name}_25fps{os.path.splitext(video_path)[1]}")
+            ffmpeg.input(video_path).output(converted_video_path, r=25).run(overwrite_output=True, quiet=True)
+            print(f"Video FPS converted from {original_fps:.2f} to 25.0 and saved to: {converted_video_path}")
+            video_path = converted_video_path  # Update video path to the converted video
+        except ffmpeg.Error as e:
+            print(f"Error converting video FPS: {e.stderr.decode('utf8')}")
     # Extract audio using ffmpeg-python
     try:
         base_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -54,7 +69,7 @@ def crop_align_face_and_extract_audio(video_path, output_dir, desired_size=(224,
                 # Calculate the angle between the eyes
                 dy = right_eye_center[1] - left_eye_center[1]
                 dx = right_eye_center[0] - left_eye_center[0]
-                angle = np.degrees(np.arctan2(dy, dx)) - 180
+                angle = np.degrees(np.arctan2(dy, dx))
 
                 # Calculate the center of the face bounding box
                 face_center_x = (left_eye_center[0] + right_eye_center[0]) // 2
@@ -111,7 +126,7 @@ def crop_align_face_and_extract_audio(video_path, output_dir, desired_size=(224,
 
 if __name__ == "__main__":
     video_path = "../dataset/example/1-30-1280x720.mp4"  # Replace with the actual path to your video
-    output_directory = "../dataset/example_output"
+    output_directory = "../dataset/example_output/1-30-1280x720"
     desired_image_size = (224, 224)
     padding_around_face = 0.2
 
