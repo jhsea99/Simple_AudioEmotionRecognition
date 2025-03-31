@@ -1,117 +1,138 @@
-# dataset.py
-
+# data/dataset.py
 import os
 import torch
-import torchaudio
-from torch.utils.data import Dataset
-from PIL import Image # For loading images
-import pandas as pd # If your annotations are in a CSV file
-from hyperparameters import SAMPLE_RATE, ALIGNED_FACE_SIZE
+from torch.utils.data import Dataset, DataLoader
+import pandas as pd
+import numpy as np
 
-class FaceAudioEmotionDataset(Dataset):
-    def __init__(self, audio_dir, face_image_dir, annotation_file):
+from data import preprocessing
+import hyperparameters as hp
+
+class EmotionDataset(Dataset):
+    def __init__(self, label_file=hp.LABEL_FILE, video_dir=hp.VIDEO_DIR,
+                 audio_dir=hp.AUDIO_DIR, frame_transform=preprocessing.preprocess_transform):
         """
         Args:
-            audio_dir (string): Directory containing audio files.
-            face_image_dir (string): Directory containing aligned face image files (or subdirectories).
-            annotation_file (string): Path to the annotation file (e.g., CSV).
+            label_file (string): Path to the csv file with annotations.
+                                 Expected columns: 'video_id', 'valence', 'arousal'.
+            video_dir (string): Directory with all the video files.
+            audio_dir (string): Directory with all the audio files.
+                                (Assumes audio filenames match video_ids).
+            frame_transform (callable, optional): Optional transform to be applied on frames.
         """
+        print(f"Loading labels from: {label_file}")
+        self.labels_df = pd.read_csv(label_file)
+        self.video_dir = video_dir
         self.audio_dir = audio_dir
-        self.face_image_dir = face_image_dir
-        self.annotations = self._load_annotations(annotation_file)
-        self.audio_files = list(self.annotations.keys()) # Assuming the keys in annotations correspond to audio file names (without extension)
+        self.frame_transform = frame_transform
 
-    def _load_annotations(self, annotation_file):
-        """
-        Loads the annotations (Valence, Arousal) from the annotation file.
-        This needs to be adapted based on your annotation file format.
+        # --- Data Integrity Check (Optional but Recommended) ---
+        # Check if all referenced files exist
+        missing_files = []
+        for idx, row in self.labels_df.iterrows():
+            video_id = str(row['video_id']) # Ensure it's a string
+            # Guess potential file extensions, adjust as needed
+            potential_video_paths = [os.path.join(self.video_dir, f"{video_id}.mp4"),
+                                     os.path.join(self.video_dir, f"{video_id}.avi"),
+                                     os.path.join(self.video_dir, f"{video_id}.mov")]
+            potential_audio_paths = [os.path.join(self.audio_dir, f"{video_id}.wav"),
+                                     os.path.join(self.audio_dir, f"{video_id}.mp3")]
 
-        Example for a CSV file where the first column is the 'audio_id'
-        and the columns 'valence' and 'arousal' exist:
-        """
-        annotations = {}
-        try:
-            df = pd.read_csv(annotation_file)
-            for index, row in df.iterrows():
-                audio_id = row['audio_id'] # Adjust the column name as needed
-                valence = row['valence']   # Adjust the column name as needed
-                arousal = row['arousal']   # Adjust the column name as needed
-                annotations[audio_id] = {'valence': valence, 'arousal': arousal}
-        except FileNotFoundError:
-            print(f"Error: Annotation file not found at {annotation_file}")
-        return annotations
+            if not any(os.path.exists(p) for p in potential_video_paths):
+                 missing_files.append(f"Video for {video_id}")
+            if not any(os.path.exists(p) for p in potential_audio_paths):
+                 missing_files.append(f"Audio for {video_id}")
+
+        if missing_files:
+            print(f"Warning: Missing {len(missing_files)} files:")
+            # for f in missing_files[:10]: print(f" - {f}") # Print first few
+            # Consider filtering self.labels_df here or raising an error
+            # self.labels_df = self.labels_df[~self.labels_df['video_id'].isin(get_ids_from_missing(missing_files))]
+
 
     def __len__(self):
-        return len(self.audio_files)
+        return len(self.labels_df)
+
+    def _find_file(self, directory, file_id, extensions):
+        """Helper to find file with different extensions."""
+        for ext in extensions:
+            path = os.path.join(directory, f"{file_id}{ext}")
+            if os.path.exists(path):
+                return path
+        return None # Or raise error
 
     def __getitem__(self, idx):
-        audio_id = self.audio_files[idx]
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
 
-        # Load audio
-        audio_path = os.path.join(self.audio_dir, f"{audio_id}.wav") # Assuming .wav format, adjust if needed
-        try:
-            waveform, sample_rate = torchaudio.load(audio_path)
-            if sample_rate != SAMPLE_RATE:
-                resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=SAMPLE_RATE)
-                waveform = resampler(waveform)
-            # Ensure mono audio
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-        except FileNotFoundError:
-            print(f"Error: Audio file not found at {audio_path}")
-            return None # Or handle the error as appropriate
+        row = self.labels_df.iloc[idx]
+        video_id = str(row['video_id'])
+        valence = row['valence']
+        arousal = row['arousal']
+        labels = torch.tensor([valence, arousal], dtype=torch.float32)
 
-        # Load face image
-        face_image_path = os.path.join(self.face_image_dir, f"{audio_id}.jpg") # Assuming .jpg format and same naming, adjust if needed
-        try:
-            face_image = Image.open(face_image_path).convert('RGB')
-            # Resize the image if necessary
-            if face_image.size != ALIGNED_FACE_SIZE:
-                face_image = face_image.resize(ALIGNED_FACE_SIZE)
-            face_image = torch.tensor(np.array(face_image)).float().permute(2, 0, 1) / 255.0 # Convert to tensor and normalize
-        except FileNotFoundError:
-            print(f"Error: Face image not found at {face_image_path}")
-            return None # Or handle the error as appropriate
+        # --- Find and Load Video Frames ---
+        video_path = self._find_file(self.video_dir, video_id, ['.mp4', '.avi', '.mov'])
+        if video_path is None:
+             print(f"Error: Video file for ID {video_id} not found!")
+             # Return dummy data or raise error - returning dummy for now
+             dummy_frames = torch.zeros(3, hp.FRAME_SIZE[0], hp.FRAME_SIZE[1]) # C, H, W
+             num_frames = 1
+             # Ensure we also return dummy audio and valid labels structure
+             dummy_waveform = torch.zeros(1, hp.TARGET_SR) # 1 channel, 1 second
+             return {'video_frames': dummy_frames, 'num_frames': num_frames, 'audio_waveform': dummy_waveform, 'labels': labels, 'id': video_id}
 
-        # Get annotations
-        target = torch.tensor([self.annotations[audio_id]['valence'], self.annotations[audio_id]['arousal']]).float()
+        # Extract frames (returns list of NumPy arrays H,W,C BGR)
+        # This can be slow - consider preprocessing offline if dataset is large
+        frames_np = preprocessing.extract_frames(video_path, target_fps=hp.TARGET_FPS)
 
-        return waveform, face_image, target
+        if not frames_np: # If no frames extracted
+             print(f"Warning: No frames extracted for video {video_id}")
+             dummy_frames = torch.zeros(3, hp.FRAME_SIZE[0], hp.FRAME_SIZE[1])
+             num_frames = 0
+        else:
+            # Apply transform to each frame (normalize, ToTensor)
+            # Stack frames into a single tensor [NumFrames, Channels, Height, Width]
+            frames_tensor_list = [self.frame_transform(frame) for frame in frames_np]
+            if frames_tensor_list:
+                 frames = torch.stack(frames_tensor_list)
+                 num_frames = frames.shape[0]
+            else: # Handle case where transforms might fail? Unlikely with ToTensor
+                 dummy_frames = torch.zeros(3, hp.FRAME_SIZE[0], hp.FRAME_SIZE[1])
+                 num_frames = 0
 
-if __name__ == '__main__':
-    # Example usage (replace with your actual paths)
-    AUDIO_DIR = '/path/to/your/audio/data'
-    FACE_IMAGE_DIR = '/path/to/your/aligned_face_images'
-    ANNOTATION_FILE = '/path/to/your/annotations.csv'
+        # --- Find and Load Audio ---
+        audio_path = self._find_file(self.audio_dir, video_id, ['.wav', '.mp3'])
+        if audio_path is None:
+             print(f"Error: Audio file for ID {video_id} not found!")
+             dummy_waveform = torch.zeros(1, hp.TARGET_SR) # 1 channel, 1 second
+        else:
+             waveform, sr = preprocessing.load_and_resample_audio(audio_path, target_sr=hp.TARGET_SR)
+             if waveform is None: # Handle loading error
+                 print(f"Warning: Could not load audio for {video_id}")
+                 waveform = torch.zeros(1, hp.TARGET_SR)
 
-    # Create dummy files and annotations for testing
-    os.makedirs(AUDIO_DIR, exist_ok=True)
-    os.makedirs(FACE_IMAGE_DIR, exist_ok=True)
-    with open(ANNOTATION_FILE, 'w') as f:
-        f.write("audio_id,valence,arousal\n")
-        f.write("audio_1,0.5,0.6\n")
-        f.write("audio_2,-0.2,0.8\n")
+        # --- Return Sample ---
+        # Note: Returning sequence of frames. Aggregation/pooling will happen later.
+        # Or aggregate here if preferred (e.g., mean frame)
+        # For now, return the sequence for flexibility
+        sample = {
+            'video_frames': frames if num_frames > 0 else dummy_frames, # [N_Frames, C, H, W] or [C,H,W]
+            'num_frames': num_frames,
+            'audio_waveform': waveform if waveform is not None else dummy_waveform, # [Channels, Time]
+            'labels': labels, # [2]
+            'id': video_id
+        }
 
-    # Create dummy audio files
-    dummy_audio_1 = torch.randn(1, SAMPLE_RATE * 2) # 2 seconds of mono audio
-    torchaudio.save(os.path.join(AUDIO_DIR, 'audio_1.wav'), dummy_audio_1, SAMPLE_RATE)
-    dummy_audio_2 = torch.randn(1, SAMPLE_RATE * 3) # 3 seconds of mono audio
-    torchaudio.save(os.path.join(AUDIO_DIR, 'audio_2.wav'), dummy_audio_2, SAMPLE_RATE)
+        return sample
 
-    # Create dummy image files
-    dummy_image_1 = Image.new('RGB', (128, 128), color = 'red')
-    dummy_image_1_resized = dummy_image_1.resize(ALIGNED_FACE_SIZE)
-    dummy_image_1_resized.save(os.path.join(FACE_IMAGE_DIR, 'audio_1.jpg'))
-    dummy_image_2 = Image.new('RGB', (64, 64), color = 'blue')
-    dummy_image_2_resized = dummy_image_2.resize(ALIGNED_FACE_SIZE)
-    dummy_image_2_resized.save(os.path.join(FACE_IMAGE_DIR, 'audio_2.jpg'))
+# --- Custom Collate Function (if needed for padding/batching varying sequences) ---
+# If you process sequences directly (not aggregating features in extractor/dataset)
+# you might need a collate_fn for the DataLoader to handle varying numbers of frames
+# or audio lengths per batch (e.g., padding).
 
-    dataset = FaceAudioEmotionDataset(AUDIO_DIR, FACE_IMAGE_DIR, ANNOTATION_FILE)
-    print(f"Number of samples in the dataset: {len(dataset)}")
-
-    # Get an example item
-    if len(dataset) > 0:
-        waveform, face_image, target = dataset[0]
-        print("Shape of audio waveform:", waveform.shape)
-        print("Shape of face image tensor:", face_image.shape)
-        print("Target Valence and Arousal:", target)
+# Example:
+# def collate_emotion_data(batch):
+#     # Custom logic to pad frames and waveforms to max length in batch
+#     # ...
+#     return processed_batch

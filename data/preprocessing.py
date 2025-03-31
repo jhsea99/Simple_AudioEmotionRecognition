@@ -1,133 +1,106 @@
-import face_alignment
-import cv2
-import numpy as np
+# data/preprocessing.py
 import os
-import ffmpeg
+import cv2
+import torchaudio
+import torch
+import numpy as np
+from torchvision import transforms
+# import face_alignment # --> You would uncomment and use this
 
-def crop_align_face_and_extract_audio(video_path, output_dir, desired_size=(224, 224), padding=0.2):
+import hyperparameters as hp
+
+# --- Placeholder for Face Alignment ---
+# This is complex. In a real scenario, you'd use a library like 'face_alignment'.
+# It would detect faces, find landmarks, and warp the image to align the face.
+# For now, we'll assume faces are roughly centered or this step happens offline.
+# fa = face_alignment.FaceAlignment(face_alignment.LandmarksType.TWO_D, flip_input=False, device=hp.DEVICE)
+
+def align_face(frame):
     """
-    Crops and aligns faces from a video, extracts the audio using ffmpeg-python, and saves both.
-
-    Args:
-        video_path (str): Path to the input video file.
-        output_dir (str): Directory to save the cropped and aligned face images and audio.
-        desired_size (tuple): The desired size (height, width) of the aligned face images.
-        padding (float): Padding around the cropped face (as a fraction of the face size).
+    Placeholder for face alignment.
+    Should return an aligned face image of a fixed size, or None if no face found.
     """
-    os.makedirs(output_dir, exist_ok=True)
-    converted_video_path = "../dataset/example_output/1-30-1280x720" # To store the path of the converted video if needed
+    # --- Actual Face Alignment Logic Would Go Here ---
+    # Example:
+    # preds = fa.get_landmarks(frame)
+    # if preds is None:
+    #     return None
+    # aligned_face = warp_and_crop_face(frame, preds[0], scale=1.5, output_size=hp.FRAME_SIZE)
+    # return aligned_face
+    # --- Placeholder Logic ---
+    # Simple center crop as a fallback if alignment isn't implemented/fails
+    h, w, _ = frame.shape
+    min_dim = min(h, w)
+    start_h = (h - min_dim) // 2
+    start_w = (w - min_dim) // 2
+    cropped = frame[start_h:start_h+min_dim, start_w:start_w+min_dim]
+    resized = cv2.resize(cropped, hp.FRAME_SIZE, interpolation=cv2.INTER_AREA)
+    return resized
 
-    # Check and convert video FPS if necessary
-    video_capture_check = cv2.VideoCapture(video_path)
-    original_fps = video_capture_check.get(cv2.CAP_PROP_FPS)
-    video_capture_check.release()
 
-    if original_fps != 25.0 and original_fps > 0:  # Check if FPS is valid and not already 25
-        try:
-            base_name = os.path.splitext(os.path.basename(video_path))[0]
-            converted_video_path = os.path.join(output_dir, f"{base_name}_25fps{os.path.splitext(video_path)[1]}")
-            ffmpeg.input(video_path).output(converted_video_path, r=25).run(overwrite_output=True, quiet=True)
-            print(f"Video FPS converted from {original_fps:.2f} to 25.0 and saved to: {converted_video_path}")
-            video_path = converted_video_path  # Update video path to the converted video
-        except ffmpeg.Error as e:
-            print(f"Error converting video FPS: {e.stderr.decode('utf8')}")
-    # Extract audio using ffmpeg-python
-    try:
-        base_name = os.path.splitext(os.path.basename(video_path))[0]
-        audio_output_path = os.path.join(output_dir, f"{base_name}.wav")
-        ffmpeg.input(video_path).output(audio_output_path).run(overwrite_output=True)
-        print(f"Audio extracted and saved to: {audio_output_path}")
-    except ffmpeg.Error as e:
-        print(f"Error extracting audio using ffmpeg: {e.stderr.decode('utf8')}")
+# --- Video Processing ---
+def extract_frames(video_path, target_fps=hp.TARGET_FPS):
+    """
+    Extracts frames from a video file at the target FPS.
+    Returns a list of NumPy arrays (frames).
+    Requires OpenCV (cv2).
+    """
+    frames = []
+    if not os.path.exists(video_path):
+        print(f"Warning: Video file not found {video_path}")
+        return frames
 
-    fa = face_alignment.FaceAlignment(landmarks_type= face_alignment.LandmarksType.TWO_D, face_detector='sfd', flip_input=False)
-    video_capture = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print(f"Error: Could not open video {video_path}")
+        return frames
 
-    if not video_capture.isOpened():
-        print(f"Error: Could not open video file: {video_path}")
-        return
+    original_fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_interval = int(round(original_fps / target_fps)) if target_fps > 0 else 1
+    frame_count = 0
 
-    frame_number = 0
     while True:
-        ret, frame = video_capture.read()
+        ret, frame = cap.read()
         if not ret:
-            break  # End of video
+            break
 
-        frame_number += 1
-        try:
-            # Detect facial landmarks
-            preds = fa.get_landmarks(frame)
+        if frame_count % frame_interval == 0:
+            # --- Optional Face Alignment ---
+            # aligned_frame = align_face(frame) # Call alignment here
+            # if aligned_frame is not None:
+            #     frames.append(aligned_frame)
+            # else:
+            #     # Handle cases where face is not detected (skip frame, use placeholder?)
+            #     print(f"Warning: Face not detected in frame {frame_count} of {video_path}")
+            # --- Using simple resize for now ---
+            resized_frame = cv2.resize(frame, hp.FRAME_SIZE, interpolation=cv2.INTER_AREA)
+            frames.append(resized_frame) # Add frame if face found & aligned
 
-            if preds is not None:
-                # Assuming only one face is present or we want to process the first detected face
-                landmarks = preds[0]
+        frame_count += 1
 
-                # Define the eyes center as the reference point for alignment
-                left_eye_center = np.mean(landmarks[36:42], axis=0)
-                right_eye_center = np.mean(landmarks[42:48], axis=0)
+    cap.release()
+    return frames # List of HxWxC NumPy arrays
 
-                # Calculate the angle between the eyes
-                dy = right_eye_center[1] - left_eye_center[1]
-                dx = right_eye_center[0] - left_eye_center[0]
-                angle = np.degrees(np.arctan2(dy, dx))
+# --- Audio Processing ---
+def load_and_resample_audio(audio_path, target_sr=hp.TARGET_SR):
+    """Loads and resamples audio using torchaudio."""
+    if not os.path.exists(audio_path):
+        print(f"Warning: Audio file not found {audio_path}")
+        return None, -1
 
-                # Calculate the center of the face bounding box
-                face_center_x = (left_eye_center[0] + right_eye_center[0]) // 2
-                face_center_y = (left_eye_center[1] + right_eye_center[1]) // 2
+    try:
+        waveform, sr = torchaudio.load(audio_path)
+        if sr != target_sr:
+            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=target_sr)
+            waveform = resampler(waveform)
+        return waveform, target_sr # Returns Tensor [Channels, Time]
+    except Exception as e:
+        print(f"Error loading or resampling audio {audio_path}: {e}")
+        return None, -1
 
-                # Perform affine transformation for alignment
-                M = cv2.getRotationMatrix2D((face_center_x, face_center_y), angle, 1.0)
-                rotated_frame = cv2.warpAffine(frame, M, (frame.shape[1], frame.shape[0]), flags=cv2.INTER_LINEAR)
-
-                # Get the bounding box of the rotated face
-                rotated_preds = fa.get_landmarks(rotated_frame)
-                if rotated_preds is not None:
-                    rotated_landmarks = rotated_preds[0]
-                    min_x = int(np.min(rotated_landmarks[:, 0]))
-                    max_x = int(np.max(rotated_landmarks[:, 0]))
-                    min_y = int(np.min(rotated_landmarks[:, 1]))
-                    max_y = int(np.max(rotated_landmarks[:, 1]))
-
-                    # Calculate padding
-                    face_width = max_x - min_x
-                    face_height = max_y - min_y
-                    padding_x = int(face_width * padding)
-                    padding_y = int(face_height * padding)
-
-                    # Crop the face with padding
-                    crop_min_x = max(0, min_x - padding_x)
-                    crop_max_x = min(rotated_frame.shape[1], max_x + padding_x)
-                    crop_min_y = max(0, min_y - padding_y)
-                    crop_max_y = min(rotated_frame.shape[0], max_y + padding_y)
-
-                    cropped_face = rotated_frame[crop_min_y:crop_max_y, crop_min_x:crop_max_x]
-
-                    if cropped_face.size > 0:
-                        # Resize the cropped face to the desired size
-                        resized_face = cv2.resize(cropped_face, desired_size, interpolation=cv2.INTER_LINEAR)
-
-                        # Save the aligned and cropped face
-                        output_filename = os.path.join(output_dir, f"frame_{frame_number:04d}.jpg")
-                        cv2.imwrite(output_filename, resized_face)
-                        print(f"Processed frame {frame_number}, saved to {output_filename}")
-                    else:
-                        print(f"Warning: Cropped face is empty for frame {frame_number}")
-                else:
-                    print(f"Warning: Could not detect face in rotated frame {frame_number}")
-
-            else:
-                print(f"Warning: No face detected in frame {frame_number}")
-
-        except Exception as e:
-            print(f"Error processing frame {frame_number}: {e}")
-
-    video_capture.release()
-    print("Face cropping and alignment complete.")
-
-if __name__ == "__main__":
-    video_path = "../dataset/example/1-30-1280x720.mp4"  # Replace with the actual path to your video
-    output_directory = "../dataset/example_output/1-30-1280x720"
-    desired_image_size = (224, 224)
-    padding_around_face = 0.2
-
-    crop_align_face_and_extract_audio(video_path, output_directory, desired_image_size, padding_around_face)
+# --- Transforms ---
+# Normalization for ResNet models
+preprocess_transform = transforms.Compose([
+    transforms.ToTensor(), # Converts numpy array (H, W, C) to Tensor (C, H, W) and scales to [0, 1]
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+])
